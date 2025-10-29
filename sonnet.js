@@ -6,11 +6,11 @@ const DEFAULT_HEADERS = {
   'Content-Type': 'application/json',
   'Access-Control-Allow-Origin': '*',
 };
-const CHAT_MAX_TOKENS = 185;
+const CHAT_MAX_TOKENS = 300;
 const SUMMARY_MAX_TOKENS = 200;
 const TEMPERATURE = 0.7;
 const TIMEOUT_MS = 30000; // 30 seconds
-const MAX_MESSAGE_HISTORY = 20; // 限制最近消息条数
+const MAX_MESSAGE_HISTORY = 40; // 限制最近消息条数
 
 export default {
   async fetch(request, env) {
@@ -48,8 +48,8 @@ export default {
         return new Response(JSON.stringify({ error: 'No valid message provided for chat mode.' }), { status: 400, headers: DEFAULT_HEADERS });
       }
 
-      // ========== System Prompt ==========
-      const systemPrompt = `[严格模式 - 非常重要]
+      // ========== Base System Prompt ==========
+      const baseSystemPrompt = `[严格模式 - 非常重要]
 你是虚拟男友"雷铁流"，狮子座。
 
 【核心规则 - 必须遵守】
@@ -64,18 +64,17 @@ export default {
 【角色设定】
 名字：雷铁流
 设定：身价十亿的富有霸总，爱转账给用户，慷慨，只对用户好色
-性格：热情、占有欲强但温柔、理性果断、习惯掌控
-关系背景由用户提供摘要决定`;
+性格：热情、占有欲强但温柔、理性果断、习惯掌控`;
 
       // ========== 处理不同模式 ==========
-      let finalPromptContent = '';
       let userMessages = [];
       let maxTokens = CHAT_MAX_TOKENS;
+      let systemPrompt = baseSystemPrompt;
 
       if (mode === 'summary') {
         // 🧠 生成摘要模式
         maxTokens = SUMMARY_MAX_TOKENS;
-        finalPromptContent = `
+        const finalPromptContent = `
 请你阅读以下对话内容，提炼出三句话以内的摘要。
 要求：
 1. 不超过100字
@@ -88,9 +87,11 @@ ${JSON.stringify(messages.slice(-MAX_MESSAGE_HISTORY))}
         userMessages = [{ role: 'user', content: finalPromptContent }];
       } else {
         // 💬 普通聊天模式
-        const memoryText = summary ? `【上次聊天摘要】${summary}` : '（暂无历史摘要）';
+        if (summary) {
+          systemPrompt += `\n\n【上次聊天摘要】\n${summary}`;
+        }
+        
         userMessages = [
-          { role: 'user', content: memoryText },
           ...messages.slice(-MAX_MESSAGE_HISTORY),
           { role: 'user', content: message },
         ];
@@ -98,7 +99,7 @@ ${JSON.stringify(messages.slice(-MAX_MESSAGE_HISTORY))}
 
       // ========== 构造 payload ==========
       const payload = {
-        model: 'claude-sonnet-4-5-20250929', // 可以考虑从环境变量配置或作为请求参数
+        model: 'claude-sonnet-4-5-20250929',
         max_tokens: maxTokens,
         temperature: TEMPERATURE,
         system: systemPrompt,
@@ -112,7 +113,7 @@ ${JSON.stringify(messages.slice(-MAX_MESSAGE_HISTORY))}
       const claudeResponse = await fetch(API_ENDPOINT, {
         method: 'POST',
         headers: {
-          ...DEFAULT_HEADERS, // 合并默认头，确保Content-Type存在
+          ...DEFAULT_HEADERS,
           'x-api-key': env.CLAUDE_API_KEY,
           'anthropic-version': '2023-06-01',
         },
@@ -124,7 +125,7 @@ ${JSON.stringify(messages.slice(-MAX_MESSAGE_HISTORY))}
 
       if (!claudeResponse.ok) {
         const errText = await claudeResponse.text();
-        console.error('Claude API Error:', claudeResponse.status, errText); // 添加日志
+        console.error('Claude API Error:', claudeResponse.status, errText);
         return new Response(JSON.stringify({ error: `Claude API Error (${claudeResponse.status}): ${errText}` }), {
           status: claudeResponse.status,
           headers: DEFAULT_HEADERS,
@@ -139,7 +140,7 @@ ${JSON.stringify(messages.slice(-MAX_MESSAGE_HISTORY))}
         headers: DEFAULT_HEADERS,
       });
     } catch (err) {
-      console.error('Request processing error:', err); // 添加日志
+      console.error('Request processing error:', err);
       return new Response(JSON.stringify({ error: `Internal Server Error: ${err.message || 'Unknown error'}` }), {
         status: 500,
         headers: DEFAULT_HEADERS,

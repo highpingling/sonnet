@@ -34,7 +34,7 @@ export default {
         });
       }
       console.log('🔑 API Key is configured.'); // 新增日志
-      console.log('💡 Using Anthropic API Version:', '2024-06-01'); // 新增日志
+      console.log('💡 Using Anthropic API Version:', '2024-10-15'); // 新增日志
 
       const requestHeaders = {
         'Content-Type': 'application/json',

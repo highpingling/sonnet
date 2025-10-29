@@ -98,7 +98,7 @@ ${JSON.stringify(messages.slice(-MAX_MESSAGE_HISTORY))}
 
       // ========== 构造 payload ==========
       const payload = {
-        model: 'claude-sonnet-4-20250514', // 可以考虑从环境变量配置或作为请求参数
+        model: 'claude-sonnet-4-5-20250929', // 可以考虑从环境变量配置或作为请求参数
         max_tokens: maxTokens,
         temperature: TEMPERATURE,
         system: systemPrompt,

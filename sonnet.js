@@ -6,11 +6,11 @@ const DEFAULT_HEADERS = {
   'Content-Type': 'application/json',
   'Access-Control-Allow-Origin': '*',
 };
-const CHAT_MAX_TOKENS = 185;
+const CHAT_MAX_TOKENS = 300;
 const SUMMARY_MAX_TOKENS = 200;
 const TEMPERATURE = 0.7;
 const TIMEOUT_MS = 30000; // 30 seconds
-const MAX_MESSAGE_HISTORY = 20; // 限制最近消息条数
+const MAX_MESSAGE_HISTORY = 150; // 限制最近消息条数
 
 export default {
   async fetch(request, env) {

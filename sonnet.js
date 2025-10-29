@@ -94,7 +94,7 @@ export default {
 
       // 构建请求体
       const payload = {
-        model: 'claude-3-5-sonnet-20240620', // 保持你正在使用的模型名称
+        model: 'claude-3-5-sonnet-20241022', // 保持你正在使用的模型名称
         max_tokens: 150,
         temperature: 0.7,
         system: systemPrompt,

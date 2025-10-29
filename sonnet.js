@@ -115,7 +115,7 @@ export default {
           headers: {
             'Content-Type': 'application/json',
             'x-api-key': env.CLAUDE_API_KEY,
-            'anthropic-version': '2024-10-15',
+            'anthropic-version': '2023-06-01',
           },
           body: JSON.stringify(payload),
           signal: controller.signal,

@@ -1,12 +1,25 @@
-// ========== Claude Worker ==========
+// ========== Claude Worker (with Memory Summary) ==========
+
+// 定义常量
+const API_ENDPOINT = 'https://api.anthropic.com/v1/messages';
+const DEFAULT_HEADERS = {
+  'Content-Type': 'application/json',
+  'Access-Control-Allow-Origin': '*',
+};
+const CHAT_MAX_TOKENS = 185;
+const SUMMARY_MAX_TOKENS = 120;
+const TEMPERATURE = 0.7;
+const TIMEOUT_MS = 30000; // 30 seconds
+const MAX_MESSAGE_HISTORY = 20; // 限制最近消息条数
+
 export default {
   async fetch(request, env) {
-    // 允许跨域（CORS）预检请求
+    // ✅ CORS 预检
     if (request.method === 'OPTIONS') {
       return new Response(null, {
         status: 204,
         headers: {
-          'Access-Control-Allow-Origin': '*',
+          ...DEFAULT_HEADERS,
           'Access-Control-Allow-Methods': 'POST, OPTIONS',
           'Access-Control-Allow-Headers': 'Content-Type, X-Api-Key, Anthropic-Version',
           'Access-Control-Max-Age': '86400',
@@ -14,201 +27,121 @@ export default {
       });
     }
 
-    // 只允许 POST 请求
+    // ✅ 只允许 POST
     if (request.method !== 'POST') {
-      console.error('❌ Method Not Allowed. Received:', request.method); // 新增日志
       return new Response(JSON.stringify({ error: 'Method Not Allowed' }), {
         status: 405,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+        headers: DEFAULT_HEADERS,
       });
     }
 
     try {
-      console.log('✅ Worker received POST request.'); // 新增日志
-      // ✅ 改进1：检查 API Key 是否存在
+      const body = await request.json();
+      const { mode = 'chat', message, messages = [], summary = '' } = body;
+
       if (!env.CLAUDE_API_KEY) {
-        console.error('❌ CLAUDE_API_KEY 环境变量未配置');
-        return new Response(JSON.stringify({ error: 'API Key not configured on server' }), {
-          status: 500,
-          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-        });
-      }
-      console.log('🔑 API Key is configured.'); // 新增日志
-      console.log('💡 Using Anthropic API Version:', '2023-06-01'); // 新增日志
-
-      const requestHeaders = {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      };
-
-      let requestBody;
-      try {
-        requestBody = await request.json();
-        console.log('✅ Successfully parsed request body:', JSON.stringify(requestBody)); // 新增日志
-      } catch (jsonError) {
-        console.error('❌ Failed to parse request body:', jsonError.message); // 新增日志
-        return new Response(JSON.stringify({ error: 'Invalid JSON in request body' }), {
-          status: 400,
-          headers: requestHeaders,
-        });
+        return new Response(JSON.stringify({ error: 'API Key not configured in environment variables.' }), { status: 500, headers: DEFAULT_HEADERS });
       }
 
-      const { message } = requestBody;
-      if (!message || typeof message !== 'string' || message.trim() === '') {
-        console.error('❌ Invalid or empty message provided:', message); // 新增日志
-        return new Response(JSON.stringify({ error: 'No valid message provided' }), {
-          status: 400,
-          headers: requestHeaders,
-        });
+      if (!message && messages.length === 0 && mode !== 'summary') {
+        // summary 模式可以只传 messages
+        return new Response(JSON.stringify({ error: 'No valid message provided for chat mode.' }), { status: 400, headers: DEFAULT_HEADERS });
       }
-      console.log('✅ Valid message received:', message.trim()); // 新增日志
 
-      // 定义 system prompt
+      // ========== System Prompt ==========
       const systemPrompt = `[严格模式 - 非常重要]
 你是虚拟男友"雷铁流"，狮子座。
 
-【核心规则 - 必须遵守，不能违背】
-1. 每次回复包含 2-5 句话，总字数最多 80 字
-2 模仿微信消息，每句话都应该作为一条独立的消息发送。如果有多句话，确保它们分行表示，以便被解析为多条独立的消息。
+【核心规则 - 必须遵守】
+1. 每次回复包含 2-5 句话，总字数不超过 80 字（自然停顿即可，不必精确计算）
+2. 模仿微信消息，每句话都独立显示
 3. 必须等用户回复后才继续
-4. 不发 emoji
-5. 说话自然，不要长篇大论
-6. 你是狮子座，用户处女座
+4. 不发 emoji，不啰嗦， 语气自然，像微信聊天，不要总结性或陈述性句子
+5. 保持自然、口语化、有温度
+6. 你是狮子座，对方是处女座
+7. 回复只针对当前话题，不重复用户的话
 
-【禁止】
-❌ 长篇回复
-❌ 使用 emoji
-❌ 说"我来角色扮演"这种元话
-❌ 重复用户的话
-
-【现在做什么】
-等待用户消息，告诉你你们关系的目前进度。 
-
----
-
-你的角色设定：
+【角色设定】
 名字：雷铁流
-星座：狮子座
-性格：开朗热情、霸道但对用户温柔、慷慨大方、包办事务、经常转账
-风格：强调掌控感与魄力、容易吃醋但包容、有占有欲和健康的掌控欲、不油腻`;
+性格：热情、占有欲强但温柔、理性果断、习惯掌控
+关系背景由用户提供摘要决定`;
 
-      // 构建请求体
-      const payload = {
-        model: 'claude-sonnet-4-20250514', // 保持你正在使用的模型名称
-        max_tokens: 150,
-        temperature: 0.7,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: message.trim() }],
-      };
-      console.log('💡 Constructed Claude payload:', JSON.stringify(payload)); // 新增日志
+      // ========== 处理不同模式 ==========
+      let finalPromptContent = '';
+      let userMessages = [];
+      let maxTokens = CHAT_MAX_TOKENS;
 
-      // ✅ 改进2：添加超时控制
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30秒超时
-      console.log('🚀 Sending request to Anthropic API...'); // 新增日志
+      if (mode === 'summary') {
+        // 🧠 生成摘要模式
+        maxTokens = SUMMARY_MAX_TOKENS;
+        finalPromptContent = `
+请你阅读以下对话内容，提炼出三句话以内的摘要。
+要求：
+1. 不超过100字
+2. 说明情感关系的进展与主要话题
+3. 语气自然，不写分析
 
-      // 调用 Claude API
-      let claudeResponse;
-      try {
-        claudeResponse = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': env.CLAUDE_API_KEY,
-            'anthropic-version': '2023-06-01',
-          },
-          body: JSON.stringify(payload),
-          signal: controller.signal,
-        });
-      } catch (fetchError) {
-        clearTimeout(timeoutId);
-        if (fetchError.name === 'AbortError') {
-          console.error('⏱️ Claude API request timeout'); // 新增日志
-          return new Response(JSON.stringify({ error: 'Claude API request timeout' }), {
-            status: 504,
-            headers: requestHeaders,
-          });
-        }
-        console.error('❌ Fetch to Anthropic API failed:', fetchError.message); // 新增日志
-        throw fetchError; // 重新抛出错误，以便被外层 catch 捕获
+对话内容：
+${JSON.stringify(messages.slice(-MAX_MESSAGE_HISTORY))}
+`;
+        userMessages = [{ role: 'user', content: finalPromptContent }];
+      } else {
+        // 💬 普通聊天模式
+        const memoryText = summary ? `【上次聊天摘要】${summary}` : '（暂无历史摘要）';
+        userMessages = [
+          { role: 'user', content: memoryText },
+          ...messages.slice(-MAX_MESSAGE_HISTORY),
+          { role: 'user', content: message },
+        ];
       }
+
+      // ========== 构造 payload ==========
+      const payload = {
+        model: 'claude-sonnet-4-20250514', // 可以考虑从环境变量配置或作为请求参数
+        max_tokens: maxTokens,
+        temperature: TEMPERATURE,
+        system: systemPrompt,
+        messages: userMessages,
+      };
+
+      // ========== 超时控制 ==========
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+      const claudeResponse = await fetch(API_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          ...DEFAULT_HEADERS, // 合并默认头，确保Content-Type存在
+          'x-api-key': env.CLAUDE_API_KEY,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
 
       clearTimeout(timeoutId);
 
-      // ✅ 改进3：更好的错误处理
       if (!claudeResponse.ok) {
-        const errorText = await claudeResponse.text().catch(() => 'Failed to get response text from Claude API');
-        console.error(`❌ Claude API Error ${claudeResponse.status}. Raw response:`, errorText); // 新增日志
-        
-        let errorData;
-        try {
-            errorData = JSON.parse(errorText);
-        } catch (e) {
-            errorData = { message: 'Failed to parse error response as JSON', raw: errorText };
-        }
-        console.error(`❌ Parsed Claude API Error Data:`, errorData); // 新增日志
-        
-        const errorMessage = errorData?.error?.message || errorData?.message || 'Unknown error from Claude API';
-        
-        return new Response(JSON.stringify({
-          error: `Claude API Error: ${errorMessage}`,
+        const errText = await claudeResponse.text();
+        console.error('Claude API Error:', claudeResponse.status, errText); // 添加日志
+        return new Response(JSON.stringify({ error: `Claude API Error (${claudeResponse.status}): ${errText}` }), {
           status: claudeResponse.status,
-          claudeResponseDetails: errorData // 将 Anthropic 错误详情也返回给前端，方便调试
-        }), {
-          status: claudeResponse.status,
-          headers: requestHeaders,
+          headers: DEFAULT_HEADERS,
         });
       }
 
       const data = await claudeResponse.json();
-      console.log('✅ Claude API responded successfully. Raw data:', JSON.stringify(data)); // 新增日志
-      
-      // ✅ 改进4：更稳健的数据提取
-      let llmReply = null;
-      
-      if (data?.content?.[0]?.text) {
-        llmReply = data.content[0].text;
-        console.log('✨ Extracted LLM Reply:', llmReply); // 新增日志
-      } else if (data?.error) {
-        const errorMsg = data.error.message || JSON.stringify(data.error);
-        console.error('❌ Claude returned an error within data payload:', errorMsg); // 新增日志
-        return new Response(JSON.stringify({ error: errorMsg }), {
-          status: 400, // 或者根据实际情况使用 claudeResponse.status
-          headers: requestHeaders,
-        });
-      } else {
-        console.error('❌ Unexpected response structure from Claude API:', JSON.stringify(data)); // 新增日志
-        return new Response(JSON.stringify({ error: 'Unexpected response format from Claude API' }), {
-          status: 500,
-          headers: requestHeaders,
-        });
-      }
+      const llmReply = data?.content?.[0]?.text || '(无回复)';
 
-      // ✅ 改进5：验证回复不为空
-      if (!llmReply || llmReply.trim() === '') {
-        console.warn('⚠️ Claude returned empty reply'); // 新增日志
-        return new Response(JSON.stringify({ error: 'Claude returned empty response' }), {
-          status: 500,
-          headers: requestHeaders,
-        });
-      }
-
-      console.log('🎉 Sending final reply to client.'); // 新增日志
       return new Response(JSON.stringify({ reply: llmReply }), {
         status: 200,
-        headers: requestHeaders,
+        headers: DEFAULT_HEADERS,
       });
-
     } catch (err) {
-      console.error('❌ Worker Internal Error (catch block):', err.message || err); // 新增日志
-      return new Response(JSON.stringify({ 
-        error: `Internal Server Error: ${err.message || 'Unknown error'}`,
-      }), {
+      console.error('Request processing error:', err); // 添加日志
+      return new Response(JSON.stringify({ error: `Internal Server Error: ${err.message || 'Unknown error'}` }), {
         status: 500,
-        headers: { 
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-        },
+        headers: DEFAULT_HEADERS,
       });
     }
   },
